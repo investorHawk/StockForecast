@@ -21,6 +21,7 @@ export default function ParamsPanel({ stock, lookback, horizon, method, feature_
           <option value="baseline">baseline</option>
           <option value="direct">direct</option>
           <option value="multistep">multistep</option>
+          <option value="nn">nn</option>
           <option value="ensemble">ensemble</option>
         </select>
         <label className="text-sm">Features</label>
@@ -33,4 +34,3 @@ export default function ParamsPanel({ stock, lookback, horizon, method, feature_
     </div>
   )
 }
-

@@ -16,6 +16,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.model_selection import TimeSeriesSplit
 from statsmodels.tsa.arima.model import ARIMA
+from sklearn.neural_network import MLPRegressor
 
 
 @dataclass
@@ -74,7 +75,7 @@ def _weekly_wf_cv_mae(
     if not slices:
         return {}
 
-    mae_acc = {"baseline": [], "direct": [], "multistep": []}
+    mae_acc = {"baseline": [], "direct": [], "multistep": [], "nn": []}
     for (train_end, test_start, test_end) in slices:
         raw_train = raw.iloc[:train_end].copy()
         actual = raw.iloc[test_start:test_end][close_col].astype(float).tolist()
@@ -102,6 +103,15 @@ def _weekly_wf_cv_mae(
             )
             e = np.array(p50_m) - np.array(actual[:horizon])
             mae_acc["multistep"].append(float(np.mean(np.abs(e))))
+        except Exception:
+            pass
+        # nn
+        try:
+            p50_n, _, _ = nn_direct_forecast_from_raw(
+                raw_train, schema_map, extras, lookback_days, horizon, feature_mode, seed
+            )
+            e = np.array(p50_n) - np.array(actual[:horizon])
+            mae_acc["nn"].append(float(np.mean(np.abs(e))))
         except Exception:
             pass
 
@@ -209,6 +219,206 @@ def quantile_direct_gbr_forecast_from_raw(
         "n_train": int(len(y)),
         "yhat": {"p10": y10, "p50": y50, "p90": y90},
     }
+    return p50, {"p10": p10, "p50": p50, "p90": p90}, diag
+
+
+def quantile_direct_lgbm_forecast_from_raw(
+    raw: pd.DataFrame,
+    schema_map: Dict[str, str],
+    extras: List[str],
+    lookback_days: int,
+    horizon_days: int,
+    feature_mode: str,
+    seed: int = 42,
+) -> Tuple[List[float], Dict[str, List[float]], Dict[str, Any]]:
+    try:
+        import lightgbm as lgb
+    except Exception as e:
+        raise RuntimeError("lightgbm-not-available") from e
+    np.random.seed(seed)
+    date_col = schema_map.get("date")
+    close_col = schema_map.get("close")
+    df = raw.sort_values(by=[date_col]).reset_index(drop=True)
+    feat_df, feature_cols = build_features(df, schema_map, extras, feature_mode)
+
+    close = df[close_col].astype(float).values
+    last_idx = len(df) - 1
+    t_end = last_idx - horizon_days
+    t_start = max(0, last_idx - lookback_days - horizon_days + 1)
+
+    rows_X = []
+    rows_y = []
+    for t in range(t_start, t_end + 1):
+        xi = feat_df.iloc[t][feature_cols].astype(float).fillna(0.0)
+        yi = float(np.log(close[t + horizon_days]) - np.log(close[t]))
+        if not np.isfinite(yi):
+            continue
+        rows_X.append(xi.values.astype(float))
+        rows_y.append(yi)
+    if len(rows_X) < 5:
+        raise ValueError("Insufficient training samples for quantile direct (lgbm)")
+
+    X = np.vstack(rows_X)
+    y = np.array(rows_y)
+    scaler = StandardScaler().fit(X)
+    Xs = scaler.transform(X)
+
+    params = dict(objective="quantile", n_estimators=500, learning_rate=0.03, subsample=0.9, random_state=seed)
+    m10 = lgb.LGBMRegressor(alpha=0.1, **params).fit(Xs, y)
+    m50 = lgb.LGBMRegressor(alpha=0.5, **params).fit(Xs, y)
+    m90 = lgb.LGBMRegressor(alpha=0.9, **params).fit(Xs, y)
+
+    x_last = feat_df.iloc[last_idx][feature_cols].astype(float).fillna(0.0).values.reshape(1, -1)
+    x_last_s = scaler.transform(x_last)
+    y10 = float(m10.predict(x_last_s)[0])
+    y50 = float(m50.predict(x_last_s)[0])
+    y90 = float(m90.predict(x_last_s)[0])
+
+    last_price = float(close[-1])
+    p50 = []
+    p10 = []
+    p90 = []
+    for t in range(1, horizon_days + 1):
+        scale = t / float(horizon_days)
+        p50.append(last_price * float(np.exp(scale * y50)))
+        p10.append(last_price * float(np.exp(scale * y10)))
+        p90.append(last_price * float(np.exp(scale * y90)))
+
+    diag = {"model": "lgbm_quantile_direct", "n_train": int(len(y)), "yhat": {"p10": y10, "p50": y50, "p90": y90}}
+    return p50, {"p10": p10, "p50": p50, "p90": p90}, diag
+
+
+def quantile_direct_catboost_forecast_from_raw(
+    raw: pd.DataFrame,
+    schema_map: Dict[str, str],
+    extras: List[str],
+    lookback_days: int,
+    horizon_days: int,
+    feature_mode: str,
+    seed: int = 42,
+) -> Tuple[List[float], Dict[str, List[float]], Dict[str, Any]]:
+    try:
+        from catboost import CatBoostRegressor
+    except Exception as e:
+        raise RuntimeError("catboost-not-available") from e
+    np.random.seed(seed)
+    date_col = schema_map.get("date")
+    close_col = schema_map.get("close")
+    df = raw.sort_values(by=[date_col]).reset_index(drop=True)
+    feat_df, feature_cols = build_features(df, schema_map, extras, feature_mode)
+
+    close = df[close_col].astype(float).values
+    last_idx = len(df) - 1
+    t_end = last_idx - horizon_days
+    t_start = max(0, last_idx - lookback_days - horizon_days + 1)
+
+    rows_X = []
+    rows_y = []
+    for t in range(t_start, t_end + 1):
+        xi = feat_df.iloc[t][feature_cols].astype(float).fillna(0.0)
+        yi = float(np.log(close[t + horizon_days]) - np.log(close[t]))
+        if not np.isfinite(yi):
+            continue
+        rows_X.append(xi.values.astype(float))
+        rows_y.append(yi)
+    if len(rows_X) < 5:
+        raise ValueError("Insufficient training samples for quantile direct (catboost)")
+
+    X = np.vstack(rows_X)
+    y = np.array(rows_y)
+    scaler = StandardScaler().fit(X)
+    Xs = scaler.transform(X)
+
+    def train(alpha: float):
+        m = CatBoostRegressor(loss_function=f"Quantile:alpha={alpha}", depth=6, learning_rate=0.03, iterations=600, subsample=0.9, random_seed=seed, verbose=False)
+        m.fit(Xs, y)
+        return m
+    m10 = train(0.1)
+    m50 = train(0.5)
+    m90 = train(0.9)
+
+    x_last = feat_df.iloc[last_idx][feature_cols].astype(float).fillna(0.0).values.reshape(1, -1)
+    x_last_s = scaler.transform(x_last)
+    y10 = float(m10.predict(x_last_s)[0])
+    y50 = float(m50.predict(x_last_s)[0])
+    y90 = float(m90.predict(x_last_s)[0])
+
+    last_price = float(close[-1])
+    p50 = []
+    p10 = []
+    p90 = []
+    for t in range(1, horizon_days + 1):
+        scale = t / float(horizon_days)
+        p50.append(last_price * float(np.exp(scale * y50)))
+        p10.append(last_price * float(np.exp(scale * y10)))
+        p90.append(last_price * float(np.exp(scale * y90)))
+
+    diag = {"model": "catboost_quantile_direct", "n_train": int(len(y)), "yhat": {"p10": y10, "p50": y50, "p90": y90}}
+    return p50, {"p10": p10, "p50": p50, "p90": p90}, diag
+
+
+def nn_direct_forecast_from_raw(
+    raw: pd.DataFrame,
+    schema_map: Dict[str, str],
+    extras: List[str],
+    lookback_days: int,
+    horizon_days: int,
+    feature_mode: str,
+    seed: int = 42,
+) -> Tuple[List[float], Dict[str, List[float]], Dict[str, Any]]:
+    # MLPによる累積リターンの直接回帰（残差から帯）
+    np.random.seed(seed)
+    date_col = schema_map.get("date")
+    close_col = schema_map.get("close")
+    df = raw.sort_values(by=[date_col]).reset_index(drop=True)
+    feat_df, feature_cols = build_features(df, schema_map, extras, feature_mode)
+
+    close = df[close_col].astype(float).values
+    last_idx = len(df) - 1
+    t_end = last_idx - horizon_days
+    t_start = max(0, last_idx - lookback_days - horizon_days + 1)
+
+    rows_X = []
+    rows_y = []
+    for t in range(t_start, t_end + 1):
+        xi = feat_df.iloc[t][feature_cols].astype(float).fillna(0.0)
+        yi = float(np.log(close[t + horizon_days]) - np.log(close[t]))
+        if not np.isfinite(yi):
+            continue
+        rows_X.append(xi.values.astype(float))
+        rows_y.append(yi)
+    if len(rows_X) < 5:
+        raise ValueError("Insufficient training samples for nn method")
+
+    X = np.vstack(rows_X)
+    y = np.array(rows_y)
+    scaler = StandardScaler().fit(X)
+    Xs = scaler.transform(X)
+
+    mlp = MLPRegressor(hidden_layer_sizes=(64, 32), activation='relu', alpha=1e-4, learning_rate_init=5e-3, max_iter=2000, random_state=seed, early_stopping=True)
+    mlp.fit(Xs, y)
+    y_hat = mlp.predict(Xs)
+    resid = y_hat - y
+    sigma = float(np.std(resid, ddof=1)) if len(resid) > 1 else 0.0
+    q10_res = float(np.percentile(resid, 10)) if len(resid) > 5 else -1.2815515655446004 * sigma
+    q90_res = float(np.percentile(resid, 90)) if len(resid) > 5 else 1.2815515655446004 * sigma
+
+    x_last = feat_df.iloc[last_idx][feature_cols].astype(float).fillna(0.0).values.reshape(1, -1)
+    x_last_s = scaler.transform(x_last)
+    y_pred = float(mlp.predict(x_last_s)[0])
+
+    last_price = float(close[-1])
+    p50 = []
+    p10 = []
+    p90 = []
+    for t in range(1, horizon_days + 1):
+        mean_cum = (y_pred / float(horizon_days)) * t
+        scale = np.sqrt(t / float(horizon_days))
+        p50.append(last_price * float(np.exp(mean_cum)))
+        p10.append(last_price * float(np.exp(mean_cum + q10_res * scale)))
+        p90.append(last_price * float(np.exp(mean_cum + q90_res * scale)))
+
+    diag = {"model": "mlp_direct", "n_train": int(len(y)), "train": {"sigma": sigma}}
     return p50, {"p10": p10, "p50": p50, "p90": p90}, diag
 
 
@@ -633,6 +843,16 @@ def forecast(
         diagnostics.setdefault("components", {}).setdefault("multistep", {})
         diagnostics["components"]["multistep"].update({"status": "error", "error": str(e)})
 
+    # NN method (MLP)
+    try:
+        p50_n, q_n, nn_diag = nn_direct_forecast_from_raw(
+            raw, schema_map, extras, lookback_days, horizon_days, feature_mode, seed
+        )
+        outputs["nn"] = (p50_n, q_n, nn_diag)
+    except Exception as e:
+        diagnostics.setdefault("components", {}).setdefault("nn", {})
+        diagnostics["components"]["nn"].update({"status": "error", "error": str(e)})
+
     # Choose output based on method
     if method == "baseline":
         chosen = "baseline"
@@ -640,13 +860,15 @@ def forecast(
         chosen = "direct"
     elif method == "multistep" and "multistep" in outputs:
         chosen = "multistep"
+    elif method == "nn" and "nn" in outputs:
+        chosen = "nn"
     else:
         chosen = "ensemble"
 
     if chosen == "ensemble":
         # compute stabilized softmax weights from CV MAE
         maes = {}
-        for k in ("baseline", "direct", "multistep"):
+        for k in ("baseline", "direct", "multistep", "nn"):
             v = cv_detail.get(k) if isinstance(diagnostics.get("cv"), dict) else None
             mae = v.get("mae") if isinstance(v, dict) else None
             if mae is not None and k in outputs:

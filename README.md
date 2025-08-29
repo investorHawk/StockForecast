@@ -69,9 +69,10 @@ API 一覧
 予測手法（v2 実装）
 -------------------
 - baseline: ランダムウォーク + ドリフト。学習窓のボラで正規近似 → p10/p50/p90。
-- direct: ElasticNetCV(TimeSeriesSplit)で「累積ログリターン」を直接回帰。残差の経験分布で帯推定。
-- multistep: 1日先GBR（GradientBoosting）。lag_ret_* を逐次更新し、残差ブートストラップで帯形成。
-- ensemble: 1スライスWF-CVのMAEから温度付きソフトマックスで重み算出（安定化のため軽いクリッピング）。
+- direct: 量子化回帰（LightGBM/CatBoost/GBRのquantile）で p10/p50/p90 を直接学習（フォールバック: ElasticNetCV, ARIMA）。
+- multistep: 1日先GBR（GradientBoosting）。lag_ret_* と roll系を逐次更新し、残差ブートストラップで帯形成。
+- nn: MLP（sklearn）で累積リターンを直接回帰し、残差から帯を推定。
+- ensemble: 週次WF-CV（MAE）から温度付きソフトマックスで重み算出（安定化クリッピング付き）。
 
 パラメータと特徴量
 ------------------
@@ -87,7 +88,7 @@ API 一覧
 ---------------
 - ルート `/` はURLクエリを解釈し、`/api/meta`→`/api/prices`→`/api/forecast` の順で取得。
 - ParamsPanel で `stock / lookback / horizon / method / feature_mode` を切替。
-- Chart.js で観測線、p50 破線、p10–p90 の帯を描画。
+- Chart.js で観測線、p50 破線、p10–p90 の帯を描画。method に `nn` も追加。
 
 テスト
 ------
@@ -132,4 +133,3 @@ git branch -M main
 git remote add origin <YOUR_REPO_URL>
 git push -u origin main
 ```
-

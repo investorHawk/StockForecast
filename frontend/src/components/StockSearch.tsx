@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { fetchStocks } from '../lib/api'
+import { fetchStocks, StockItem } from '../lib/api'
 
 type Props = {
   value: string
@@ -8,7 +8,7 @@ type Props = {
 
 export default function StockSearch({ value, onSelect }: Props) {
   const [q, setQ] = useState(value || '')
-  const [items, setItems] = useState<string[]>([])
+  const [items, setItems] = useState<StockItem[]>([])
 
   useEffect(() => { setQ(value || '') }, [value])
 
@@ -36,8 +36,9 @@ export default function StockSearch({ value, onSelect }: Props) {
       {items.length > 0 && (
         <div className="border rounded bg-white max-h-48 overflow-auto">
           {items.map((it) => (
-            <div key={it} className="px-3 py-2 hover:bg-slate-100 cursor-pointer" onClick={() => onSelect(it)}>
-              {it}
+            <div key={`${it.code}-${it.name}`} className="px-3 py-2 hover:bg-slate-100 cursor-pointer" onClick={() => onSelect(it.code)}>
+              <div className="text-sm font-medium">{it.name || it.code}</div>
+              <div className="text-xs text-slate-500">{it.code}</div>
             </div>
           ))}
         </div>
@@ -45,4 +46,3 @@ export default function StockSearch({ value, onSelect }: Props) {
     </div>
   )
 }
-

@@ -35,8 +35,10 @@ export async function fetchMeta() {
   return data
 }
 
+export type StockItem = { code: string; name: string }
+
 export async function fetchStocks(q: string, limit = 20) {
-  const { data } = await api.get<{ items: string[] }>('/api/stocks', { params: { q, limit } })
+  const { data } = await api.get<{ items: StockItem[] }>('/api/stocks', { params: { q, limit } })
   return data.items
 }
 
@@ -56,4 +58,3 @@ export async function fetchForecast(params: {
   const { data } = await api.get<ForecastResponse>('/api/forecast', { params })
   return data
 }
-
