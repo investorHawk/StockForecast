@@ -1,0 +1,24 @@
+# Node
+node_modules/
+frontend/node_modules/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Env
+.env
+backend/.env
+
+# Data / artifacts
+data/
+*.db
+backend/db/schema_cache.json
+
+# Misc
+dist/
+frontend/dist/
+.DS_Store
+
