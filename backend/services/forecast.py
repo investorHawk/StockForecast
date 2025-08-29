@@ -214,6 +214,9 @@ def quantile_direct_gbr_forecast_from_raw(
         p10.append(last_price * float(np.exp(scale * y10)))
         p90.append(last_price * float(np.exp(scale * y90)))
 
+    # Enforce quantile ordering
+    p10, p50, p90 = _enforce_quantile_order(p10, p50, p90)
+
     diag = {
         "model": "gbr_quantile_direct",
         "n_train": int(len(y)),
@@ -284,6 +287,9 @@ def quantile_direct_lgbm_forecast_from_raw(
         p10.append(last_price * float(np.exp(scale * y10)))
         p90.append(last_price * float(np.exp(scale * y90)))
 
+    # Enforce ordering
+    p10, p50, p90 = _enforce_quantile_order(p10, p50, p90)
+
     diag = {"model": "lgbm_quantile_direct", "n_train": int(len(y)), "yhat": {"p10": y10, "p50": y50, "p90": y90}}
     return p50, {"p10": p10, "p50": p50, "p90": p90}, diag
 
@@ -352,6 +358,9 @@ def quantile_direct_catboost_forecast_from_raw(
         p50.append(last_price * float(np.exp(scale * y50)))
         p10.append(last_price * float(np.exp(scale * y10)))
         p90.append(last_price * float(np.exp(scale * y90)))
+
+    # Enforce ordering
+    p10, p50, p90 = _enforce_quantile_order(p10, p50, p90)
 
     diag = {"model": "catboost_quantile_direct", "n_train": int(len(y)), "yhat": {"p10": y10, "p50": y50, "p90": y90}}
     return p50, {"p10": p10, "p50": p50, "p90": p90}, diag
@@ -433,8 +442,10 @@ def _conformal_adjust_prices(
     a_hi = None
     if calib_p10 and calib_p90 and actual:
         n = min(len(calib_p10), len(calib_p90), len(actual))
-        lo_scores = [calib_p10[i] - actual[i] for i in range(n)]
-        hi_scores = [actual[i] - calib_p90[i] for i in range(n)]
+        # lower residuals: y - q_lo(x)
+        lo_scores = [actual[i] - calib_p10[i] for i in range(n)]
+        # upper residuals: q_hi(x) - y
+        hi_scores = [calib_p90[i] - actual[i] for i in range(n)]
         try:
             a_lo = float(np.quantile(lo_scores, 0.9))
             a_hi = float(np.quantile(hi_scores, 0.9))
@@ -463,6 +474,18 @@ def _conformal_adjust_prices(
         pass
 
     return p10_adj, pred_p50, p90_adj
+
+
+def _enforce_quantile_order(p10: List[float], p50: List[float], p90: List[float]) -> Tuple[List[float], List[float], List[float]]:
+    out10: List[float] = []
+    out50: List[float] = []
+    out90: List[float] = []
+    for a, b, c in zip(p10, p50, p90):
+        lo, mid, hi = sorted([a, b, c])
+        out10.append(lo)
+        out50.append(mid)
+        out90.append(hi)
+    return out10, out50, out90
 
 
 def arima_forecast(close_series: pd.Series, horizon_days: int) -> Tuple[List[float], Dict[str, List[float]]]:
@@ -596,6 +619,9 @@ def direct_forecast_from_raw(
             scale = np.sqrt(t / float(horizon_days))
             p10.append(last_price * float(np.exp(mean_cum + q10_res * scale)))
             p90.append(last_price * float(np.exp(mean_cum + q90_res * scale)))
+
+    # Enforce element-wise ordering
+    p10, p50, p90 = _enforce_quantile_order(p10, p50, p90)
 
     diag = {
         "model": "elasticnetcv+quantile",
@@ -740,6 +766,9 @@ def multistep_forecast_from_raw(
     p50 = paths.median(axis=0).tolist()
     p10 = np.percentile(paths, 10, axis=0).tolist()
     p90 = np.percentile(paths, 90, axis=0).tolist()
+
+    # Enforce ordering
+    p10, p50, p90 = _enforce_quantile_order(p10, p50, p90)
 
     diag = {
         "model": "gbr_1step_iter_bootstrap",
@@ -956,6 +985,15 @@ def forecast(
             diagnostics.setdefault("calibration", {})
             diagnostics["calibration"]["method"] = "split_conformal+vol_scale"
             diagnostics["calibration"]["cv_len"] = cv_len
+    except Exception:
+        pass
+
+    # Final safety: enforce quantile ordering
+    try:
+        if isinstance(q, dict) and "p10" in q and "p90" in q:
+            p10_f, p50_f, p90_f = _enforce_quantile_order(q.get("p10", []), p50, q.get("p90", []))
+            q = {"p10": p10_f, "p50": p50_f, "p90": p90_f}
+            p50 = p50_f
     except Exception:
         pass
 

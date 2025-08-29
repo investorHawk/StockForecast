@@ -33,7 +33,7 @@ export default function PriceChart({ prices, forecast, loading }: Props) {
   const labels = [...histDates, ...fcDates]
   // pad historical series to the full labels length so Chart.js aligns datasets
   const histSeries = [...histClose, ...new Array(fcDates.length).fill(null as any)]
-  const p50Series = new Array(histClose.length - 1).fill(null as any).concat([histClose[histClose.length - 1], ...p50])
+  const p50Series = new Array(histClose.length).fill(null as any).concat(p50)
   const p90Series = new Array(histClose.length).fill(null as any).concat(p90)
   const p10Series = new Array(histClose.length).fill(null as any).concat(p10)
 
